@@ -554,7 +554,7 @@ struct IslandPanelView: View {
                         Text(model.lang.t("island.showAll", model.allSessions.count))
                             .font(.system(size: 10.5, weight: .medium))
                             .foregroundStyle(.white.opacity(0.36))
-                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.horizontal, sessionListSideInset)
                             .padding(.top, 6)
                             .padding(.bottom, 2)
