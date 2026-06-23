@@ -694,6 +694,9 @@ final class AppModel {
                 self.codexAppServer.disconnect()
             }
         }
+        monitoring.onCodexAppMaintenanceTick = { [weak self] in
+            self?.discovery.maintainCodexAppSessionsIfNeeded()
+        }
         refreshOverlayDisplayConfiguration()
         hasFinishedInit = true
     }

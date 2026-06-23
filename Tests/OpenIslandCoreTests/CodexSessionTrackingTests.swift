@@ -628,6 +628,36 @@ struct CodexSessionTrackingTests {
             fromArchivedRolloutFilename: "rollout-2026-06-23T14-37-26-019ef332-b281-7292-874f-4cf8787fb4b8.jsonl"
         )
         #expect(sessionID == "019ef332-b281-7292-874f-4cf8787fb4b8")
+
+        let futureSessionID = CodexArchivedSessionIndex.sessionID(
+            fromArchivedRolloutFilename: "rollout-2026-08-15T12-00-00-01af0000-b281-7292-874f-4cf8787fb4b8.jsonl"
+        )
+        #expect(futureSessionID == "01af0000-b281-7292-874f-4cf8787fb4b8")
+    }
+
+    @Test
+    func codexAppSessionReconcilerIgnoresRunningSessionsWithoutTranscriptPath() {
+        let events = CodexAppSessionReconciler.stalledRunningEvents(for: [
+            AgentSession(
+                id: "codex-session-bootstrapping",
+                title: "Codex · demo",
+                tool: .codex,
+                origin: .live,
+                attachmentState: .attached,
+                phase: .running,
+                summary: "Thinking",
+                updatedAt: .now,
+                jumpTarget: JumpTarget(
+                    terminalApp: "Codex.app",
+                    workspaceName: "demo",
+                    paneTitle: "Codex",
+                    workingDirectory: "/tmp/demo",
+                    codexThreadID: "codex-session-bootstrapping"
+                )
+            ),
+        ])
+
+        #expect(events.isEmpty)
     }
 
     @Test

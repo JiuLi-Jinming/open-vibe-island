@@ -368,11 +368,19 @@ final class SessionDiscoveryCoordinator {
 
     // MARK: - Rollout tracking
 
+    /// Periodic Codex.app maintenance: reconcile archived/stalled sessions and
+    /// re-scan rollouts. Throttled internally; safe to call from the 2s monitor loop.
+    func maintainCodexAppSessionsIfNeeded() {
+        reconcileStalledCodexAppSessionsIfNeeded()
+        rediscoverCodexAppSessionsIfNeeded()
+    }
+
     func refreshCodexRolloutTracking() {
         reconcileStalledCodexAppSessionsIfNeeded()
 
         let targets = state.sessions.compactMap { session -> CodexRolloutWatchTarget? in
             guard session.tool == .codex,
+                  !session.isSessionEnded,
                   let transcriptPath = session.codexMetadata?.transcriptPath,
                   !transcriptPath.isEmpty else {
                 return nil

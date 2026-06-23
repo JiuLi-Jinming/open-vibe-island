@@ -29,6 +29,10 @@ final class ProcessMonitoringCoordinator {
     @ObservationIgnored
     var onCodexAppRunningChanged: ((_ isRunning: Bool) -> Void)?
 
+    /// Fires on each monitor tick while Codex.app is running (every ~2s).
+    @ObservationIgnored
+    var onCodexAppMaintenanceTick: (() -> Void)?
+
     @ObservationIgnored
     let activeAgentProcessDiscovery = ActiveAgentProcessDiscovery()
 
@@ -82,6 +86,9 @@ final class ProcessMonitoringCoordinator {
                     terminalAvailability: terminalAvail,
                     preResolvedJumpTargets: jumpTargets
                 )
+                if Self.isCodexDesktopAppRunning() {
+                    self.onCodexAppMaintenanceTick?()
+                }
                 try? await Task.sleep(for: .seconds(2))
             }
         }

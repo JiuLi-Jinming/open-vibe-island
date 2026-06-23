@@ -245,7 +245,10 @@ public enum CodexArchivedSessionIndex: Sendable {
     }
 
     static func sessionID(fromArchivedRolloutFilename filename: String) -> String? {
-        guard let range = filename.range(of: #"019[0-9a-f-]{30,}\.jsonl$"#, options: .regularExpression) else {
+        guard let range = filename.range(
+            of: #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) else {
             return nil
         }
         let match = String(filename[range])
@@ -308,8 +311,10 @@ public enum CodexAppSessionReconciler {
         }
 
         let transcriptPath = session.codexMetadata?.transcriptPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !transcriptPath.isEmpty,
-              fileManager.fileExists(atPath: transcriptPath) else {
+        guard !transcriptPath.isEmpty else {
+            return nil
+        }
+        guard fileManager.fileExists(atPath: transcriptPath) else {
             return .activityUpdated(
                 SessionActivityUpdated(
                     sessionID: session.id,
