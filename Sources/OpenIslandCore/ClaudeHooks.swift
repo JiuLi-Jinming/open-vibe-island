@@ -261,6 +261,14 @@ public struct ClaudeSessionMetadata: Equatable, Codable, Sendable {
     public var worktreeBranch: String?
     public var activeSubagents: [ClaudeSubagentInfo]
     public var activeTasks: [ClaudeTaskInfo]
+    /// Per-session context-window fill, 0–100. Sourced from the statusLine
+    /// `context_window.used_percentage`; the only place this metric is exposed.
+    /// This is NOT account quota — see the CONTEXT.md usage glossary.
+    public var contextUsedPercentage: Double?
+    /// Total size of the context window in tokens (e.g. 200_000 / 1_000_000).
+    public var contextWindowSize: Int?
+    /// Current input tokens occupying the context window.
+    public var totalInputTokens: Int?
 
     public init(
         transcriptPath: String? = nil,
@@ -276,7 +284,10 @@ public struct ClaudeSessionMetadata: Equatable, Codable, Sendable {
         agentType: String? = nil,
         worktreeBranch: String? = nil,
         activeSubagents: [ClaudeSubagentInfo] = [],
-        activeTasks: [ClaudeTaskInfo] = []
+        activeTasks: [ClaudeTaskInfo] = [],
+        contextUsedPercentage: Double? = nil,
+        contextWindowSize: Int? = nil,
+        totalInputTokens: Int? = nil
     ) {
         self.transcriptPath = transcriptPath
         self.initialUserPrompt = initialUserPrompt
@@ -292,6 +303,9 @@ public struct ClaudeSessionMetadata: Equatable, Codable, Sendable {
         self.worktreeBranch = worktreeBranch
         self.activeSubagents = activeSubagents
         self.activeTasks = activeTasks
+        self.contextUsedPercentage = contextUsedPercentage
+        self.contextWindowSize = contextWindowSize
+        self.totalInputTokens = totalInputTokens
     }
 
     public var isEmpty: Bool {
@@ -309,6 +323,9 @@ public struct ClaudeSessionMetadata: Equatable, Codable, Sendable {
             && worktreeBranch == nil
             && activeSubagents.isEmpty
             && activeTasks.isEmpty
+            && contextUsedPercentage == nil
+            && contextWindowSize == nil
+            && totalInputTokens == nil
     }
 }
 

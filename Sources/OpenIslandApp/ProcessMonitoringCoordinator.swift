@@ -365,6 +365,8 @@ final class ProcessMonitoringCoordinator {
             payload.sessionID
         case let .cursorSessionMetadataUpdated(payload):
             payload.sessionID
+        case let .claudeContextUpdated(payload):
+            payload.sessionID
         case let .actionableStateResolved(payload):
             payload.sessionID
         }

@@ -106,11 +106,26 @@ public final class ClaudeStatusLineInstallationManager: @unchecked Sendable {
         let managedStatusLineConfigured = managedCommands.contains(command ?? "")
         let managedStatusLineInstalled = managedStatusLineConfigured
             && (command.map { fileManager.fileExists(atPath: $0) } ?? false)
-        let managedStatusLineNeedsRepair = managedStatusLineConfigured && !managedStatusLineInstalled
         let hasStatusLine = statusLine != nil
         let hasConflictingStatusLine = hasStatusLine && !managedStatusLineConfigured
         let managedStatusLineIsWrapper = managedStatusLineConfigured
             && settings[openIslandOriginalStatusLineKey] != nil
+        // Migration: an already-installed managed script from an older build
+        // still writes the /tmp cache and never forwards to the bridge. Detect
+        // that by the absence of the bridge-forwarding marker and treat it as a
+        // repair so the next refresh rewrites it. Wrapper installs are skipped
+        // here — repair reinstalls as non-wrapper and would drop the delegate.
+        let installedScriptIsStale: Bool = {
+            guard managedStatusLineInstalled,
+                  !managedStatusLineIsWrapper,
+                  let command,
+                  let contents = try? String(contentsOfFile: command, encoding: .utf8) else {
+                return false
+            }
+            return !contents.contains("--source claude-statusline")
+        }()
+        let managedStatusLineNeedsRepair = managedStatusLineConfigured
+            && (!managedStatusLineInstalled || installedScriptIsStale)
 
         return ClaudeStatusLineInstallationStatus(
             claudeDirectory: claudeDirectory,
@@ -151,7 +166,7 @@ public final class ClaudeStatusLineInstallationManager: @unchecked Sendable {
             try backupFile(at: settingsURL)
         }
 
-        let scriptContents = Self.managedScript(cacheURL: currentStatus.cacheURL)
+        let scriptContents = Self.managedScript(hooksBinaryURL: ManagedHooksBinary.defaultURL())
         try settingsData.write(to: settingsURL, options: .atomic)
         try scriptContents.write(to: scriptURL, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
@@ -196,7 +211,7 @@ public final class ClaudeStatusLineInstallationManager: @unchecked Sendable {
         }
 
         let wrapperContents = Self.wrappedScript(
-            cacheURL: currentStatus.cacheURL,
+            hooksBinaryURL: ManagedHooksBinary.defaultURL(),
             delegateScriptURL: delegateScriptURL
         )
         let delegateContents = Self.wrappedDelegateScript(originalCommand: originalCommand)
@@ -292,16 +307,17 @@ public final class ClaudeStatusLineInstallationManager: @unchecked Sendable {
     /// the same stdin to the delegate script which runs the user's original command.
     /// The delegate's stdout is what Claude Code displays, so the user's custom statusLine
     /// is unchanged visually — we're just teeing the payload to the cache file.
-    public static func wrappedScript(cacheURL: URL, delegateScriptURL: URL) -> String {
+    public static func wrappedScript(hooksBinaryURL: URL, delegateScriptURL: URL) -> String {
         #"""
         #!/bin/bash
         # Claude Code StatusLine Script (wrapper mode)
         # Auto-configured by Open Island.
         # The delegate script holds the user's original statusLine.command.
-        # Keep the rate_limits cache line intact — it feeds the notch usage panel.
+        # Keep the forwarding line intact — it streams per-session context-window
+        # usage and account quota (5h/7d) to the Open Island notch. It runs in the
+        # background so it never blocks or alters your visible status line.
         input=$(cat)
-        _rl=$(printf '%s' "$input" | jq -c '.rate_limits // empty' 2>/dev/null)
-        [ -n "$_rl" ] && printf '%s\n' "$_rl" > "\#(cacheURL.path)"
+        printf '%s' "$input" | "\#(hooksBinaryURL.path)" --source claude-statusline >/dev/null 2>&1 &
         printf '%s' "$input" | "\#(delegateScriptURL.path)"
         """#
     }
@@ -313,7 +329,7 @@ public final class ClaudeStatusLineInstallationManager: @unchecked Sendable {
         "#!/bin/bash\n# Original Claude Code statusLine.command preserved by Open Island.\n\(originalCommand)\n"
     }
 
-    public static func managedScript(cacheURL: URL = managedCacheURL) -> String {
+    public static func managedScript(hooksBinaryURL: URL = ManagedHooksBinary.defaultURL()) -> String {
         #"""
         #!/bin/bash
         # Claude Code StatusLine Script
@@ -323,12 +339,12 @@ public final class ClaudeStatusLineInstallationManager: @unchecked Sendable {
         # every assistant message. The user wants to customize their
         # status line display, so please ADD your code to this file.
         # Do NOT create a separate script or change statusLine.command.
-        # IMPORTANT: Keep the rate_limits cache line below intact.
-        # It feeds usage data (5h/7d quotas) to the Open Island
-        # Notch panel. Removing it will degrade the usage display.
+        # IMPORTANT: Keep the forwarding line below intact. It streams
+        # per-session context-window usage and account quota (5h/7d) to
+        # the Open Island notch. It runs in the background so it never
+        # blocks your status line. Removing it degrades the usage display.
         input=$(cat)
-        _rl=$(echo "$input" | jq -c '.rate_limits // empty' 2>/dev/null)
-        [ -n "$_rl" ] && printf '%s\n' "$_rl" > "\#(cacheURL.path)"
+        printf '%s' "$input" | "\#(hooksBinaryURL.path)" --source claude-statusline >/dev/null 2>&1 &
         echo "$input" | jq -r '"[\(.model.display_name // "Claude")] \(.context_window.used_percentage // 0)% context"' 2>/dev/null
         """#
     }

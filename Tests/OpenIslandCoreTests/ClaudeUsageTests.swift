@@ -142,8 +142,10 @@ struct ClaudeUsageTests {
         #expect(statusLine?["type"] as? String == "command")
 
         let scriptContents = try String(contentsOf: installed.scriptURL, encoding: .utf8)
-        #expect(scriptContents.contains(installed.cacheURL.path))
-        #expect(scriptContents.contains(".rate_limits // empty"))
+        // The managed script forwards the status-line payload to the bridge
+        // (per-session context% + account quota) instead of writing a /tmp cache.
+        #expect(scriptContents.contains("--source claude-statusline"))
+        #expect(!scriptContents.contains(".rate_limits // empty"))
 
         let uninstalled = try manager.uninstall()
         #expect(!uninstalled.managedStatusLineInstalled)
@@ -335,7 +337,9 @@ struct ClaudeUsageTests {
         #expect(FileManager.default.fileExists(atPath: delegateURL.path))
 
         let wrapperContents = try String(contentsOf: wrapped.scriptURL, encoding: .utf8)
-        #expect(wrapperContents.contains(wrapped.cacheURL.path))
+        // Wrapper mode still forwards to the bridge, then delegates to the
+        // user's original command for the visible status line.
+        #expect(wrapperContents.contains("--source claude-statusline"))
         #expect(wrapperContents.contains(delegateURL.path))
 
         let delegateContents = try String(contentsOf: delegateURL, encoding: .utf8)

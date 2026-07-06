@@ -179,6 +179,22 @@ public struct SessionState: Equatable, Sendable {
             session.updatedAt = payload.timestamp
             upsert(session)
 
+        case let .claudeContextUpdated(payload):
+            // Merge ONLY the context-window fields into existing metadata. This
+            // fires ~once per assistant turn as passive telemetry, so it must
+            // not clobber other metadata fields and must not bump updatedAt /
+            // phase (that would reorder cards and reset idle timers).
+            guard var session = sessionsByID[payload.sessionID] else {
+                return
+            }
+
+            var metadata = session.claudeMetadata ?? ClaudeSessionMetadata()
+            metadata.contextUsedPercentage = payload.contextUsedPercentage
+            metadata.contextWindowSize = payload.contextWindowSize
+            metadata.totalInputTokens = payload.totalInputTokens
+            session.claudeMetadata = metadata.isEmpty ? nil : metadata
+            upsert(session)
+
         case let .geminiSessionMetadataUpdated(payload):
             guard var session = sessionsByID[payload.sessionID] else {
                 return

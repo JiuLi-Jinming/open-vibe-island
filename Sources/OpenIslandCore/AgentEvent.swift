@@ -222,6 +222,33 @@ public struct CursorSessionMetadataUpdated: Equatable, Codable, Sendable {
     }
 }
 
+/// Per-session context-window telemetry from the Claude status line. Fires
+/// roughly once per assistant turn, so it is applied on a lightweight path that
+/// merges only the context fields into `claudeMetadata` — it must not bump
+/// activity/phase or trigger notifications. Account quota travels separately
+/// (not in this event); see the CONTEXT.md usage glossary.
+public struct ClaudeContextUpdated: Equatable, Codable, Sendable {
+    public var sessionID: String
+    public var contextUsedPercentage: Double?
+    public var contextWindowSize: Int?
+    public var totalInputTokens: Int?
+    public var timestamp: Date
+
+    public init(
+        sessionID: String,
+        contextUsedPercentage: Double?,
+        contextWindowSize: Int?,
+        totalInputTokens: Int?,
+        timestamp: Date
+    ) {
+        self.sessionID = sessionID
+        self.contextUsedPercentage = contextUsedPercentage
+        self.contextWindowSize = contextWindowSize
+        self.totalInputTokens = totalInputTokens
+        self.timestamp = timestamp
+    }
+}
+
 public struct ActionableStateResolved: Equatable, Codable, Sendable {
     public var sessionID: String
     public var summary: String
@@ -250,6 +277,7 @@ public enum AgentEvent: Equatable, Codable, Sendable {
     case geminiSessionMetadataUpdated(GeminiSessionMetadataUpdated)
     case openCodeSessionMetadataUpdated(OpenCodeSessionMetadataUpdated)
     case cursorSessionMetadataUpdated(CursorSessionMetadataUpdated)
+    case claudeContextUpdated(ClaudeContextUpdated)
     case actionableStateResolved(ActionableStateResolved)
 
     private enum CodingKeys: String, CodingKey {
@@ -265,6 +293,7 @@ public enum AgentEvent: Equatable, Codable, Sendable {
         case geminiSessionMetadataUpdated
         case openCodeSessionMetadataUpdated
         case cursorSessionMetadataUpdated
+        case claudeContextUpdated
         case actionableStateResolved
     }
 
@@ -280,6 +309,7 @@ public enum AgentEvent: Equatable, Codable, Sendable {
         case geminiSessionMetadataUpdated
         case openCodeSessionMetadataUpdated
         case cursorSessionMetadataUpdated
+        case claudeContextUpdated
         case actionableStateResolved
     }
 
@@ -317,6 +347,10 @@ public enum AgentEvent: Equatable, Codable, Sendable {
         case .cursorSessionMetadataUpdated:
             self = .cursorSessionMetadataUpdated(
                 try container.decode(CursorSessionMetadataUpdated.self, forKey: .cursorSessionMetadataUpdated)
+            )
+        case .claudeContextUpdated:
+            self = .claudeContextUpdated(
+                try container.decode(ClaudeContextUpdated.self, forKey: .claudeContextUpdated)
             )
         case .actionableStateResolved:
             self = .actionableStateResolved(
@@ -362,6 +396,9 @@ public enum AgentEvent: Equatable, Codable, Sendable {
         case let .cursorSessionMetadataUpdated(payload):
             try container.encode(EventType.cursorSessionMetadataUpdated, forKey: .type)
             try container.encode(payload, forKey: .cursorSessionMetadataUpdated)
+        case let .claudeContextUpdated(payload):
+            try container.encode(EventType.claudeContextUpdated, forKey: .type)
+            try container.encode(payload, forKey: .claudeContextUpdated)
         case let .actionableStateResolved(payload):
             try container.encode(EventType.actionableStateResolved, forKey: .type)
             try container.encode(payload, forKey: .actionableStateResolved)

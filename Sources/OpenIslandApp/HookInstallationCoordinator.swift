@@ -646,7 +646,7 @@ final class HookInstallationCoordinator {
                 do {
                     let usageState = try self.readClaudeUsageState(repairManagedBridgeIfNeeded: true)
                     self.claudeStatusLineStatus = usageState.status
-                    self.claudeUsageSnapshot = usageState.snapshot
+                    // Snapshot arrives via the bridge callback, not from disk.
                 } catch {
                     self.onStatusMessage?("Failed to read Claude usage state: \(error.localizedDescription)")
                 }
@@ -757,11 +757,10 @@ final class HookInstallationCoordinator {
                         status = try manager.install()
                         repairedManagedBridge = true
                     }
-                    let snapshot = try ClaudeUsageLoader.load()
-                    return (status: status, snapshot: snapshot, repairedManagedBridge: repairedManagedBridge)
+                    return (status: status, repairedManagedBridge: repairedManagedBridge)
                 }.value
                 self.claudeStatusLineStatus = usageState.status
-                self.claudeUsageSnapshot = usageState.snapshot
+                // Usage snapshot is pushed by the bridge callback, not read from disk.
                 if usageState.repairedManagedBridge {
                     self.onStatusMessage?("Recovered the Claude usage bridge after repairing a missing managed script.")
                 }
@@ -1075,9 +1074,13 @@ final class HookInstallationCoordinator {
         claudeUsageMonitorTask = Task { @MainActor [weak self] in
             guard let self else { return }
 
+            // Usage numbers now stream in over the bridge, so this loop only
+            // periodically re-checks that the managed status-line script is
+            // still installed (and repairs it). A slow cadence keeps idle CPU
+            // low; a fresh turn pushes usage the moment the script runs.
             while !Task.isCancelled {
                 self.refreshClaudeUsageState()
-                try? await Task.sleep(for: .seconds(5))
+                try? await Task.sleep(for: .seconds(60))
             }
         }
     }
@@ -1097,11 +1100,13 @@ final class HookInstallationCoordinator {
 
     // MARK: - Internal: readClaudeUsageState
 
+    /// Reads (and optionally repairs) the managed status-line install. Usage
+    /// data itself no longer comes from disk — the status-line script forwards
+    /// context% and quota over the bridge — so this only reports install health.
     nonisolated func readClaudeUsageState(
         repairManagedBridgeIfNeeded: Bool
     ) throws -> (
         status: ClaudeStatusLineInstallationStatus,
-        snapshot: ClaudeUsageSnapshot?,
         repairedManagedBridge: Bool
     ) {
         let manager = ClaudeStatusLineInstallationManager()
@@ -1113,8 +1118,7 @@ final class HookInstallationCoordinator {
             repairedManagedBridge = true
         }
 
-        let snapshot = try ClaudeUsageLoader.load()
-        return (status, snapshot, repairedManagedBridge)
+        return (status, repairedManagedBridge)
     }
 
     // MARK: - Private helpers

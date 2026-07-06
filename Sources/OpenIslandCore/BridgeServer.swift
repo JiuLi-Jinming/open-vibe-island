@@ -81,6 +81,13 @@ public final class BridgeServer: @unchecked Sendable {
     /// overwritten whenever AppModel pushes a fresh snapshot.
     private var localState = SessionState()
 
+    /// Called on the server queue whenever a Claude status-line payload carries
+    /// account-wide quota (5h / 7d). Account quota is a singleton, not a
+    /// per-session event, so it is delivered by this direct in-process callback
+    /// rather than the AgentEvent stream. The receiver must hop to its own
+    /// actor. `cachedAt` is already stamped with receipt time.
+    public var onClaudeUsageSnapshot: ((ClaudeUsageSnapshot) -> Void)?
+
     public init(
         socketURL: URL = BridgeSocketLocation.defaultURL
     ) {
@@ -468,7 +475,37 @@ public final class BridgeServer: @unchecked Sendable {
 
         case let .processGeminiHook(payload):
             handleGeminiHook(payload, from: clientID)
+
+        case let .processClaudeStatusLine(payload):
+            handleClaudeStatusLine(payload, from: clientID)
         }
+    }
+
+    /// Splits a Claude status-line payload into its two facets: per-session
+    /// context-window telemetry (emitted as an AgentEvent) and account-wide
+    /// quota (delivered via the `onClaudeUsageSnapshot` callback). Fires roughly
+    /// once per assistant turn.
+    private func handleClaudeStatusLine(_ payload: ClaudeStatusLinePayload, from clientID: UUID) {
+        if payload.hasContextData {
+            emit(
+                .claudeContextUpdated(
+                    ClaudeContextUpdated(
+                        sessionID: payload.sessionID,
+                        contextUsedPercentage: payload.contextUsedPercentage,
+                        contextWindowSize: payload.contextWindowSize,
+                        totalInputTokens: payload.totalInputTokens,
+                        timestamp: .now
+                    )
+                )
+            )
+        }
+
+        if var snapshot = payload.usageSnapshot {
+            snapshot.cachedAt = .now
+            onClaudeUsageSnapshot?(snapshot)
+        }
+
+        send(.response(.acknowledged), to: clientID)
     }
 
     private func handleCodexHook(_ payload: CodexHookPayload, from clientID: UUID) {

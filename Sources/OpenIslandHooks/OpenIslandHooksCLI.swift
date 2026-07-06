@@ -18,12 +18,13 @@ struct OpenIslandHooksCLI {
         case cursor
         case gemini
         case kimi
+        case claudeStatusLine = "claude-statusline"
 
         var isClaudeFormat: Bool {
             switch self {
             case .claude, .qoder, .qwen, .factory, .droid, .codebuddy, .kimi:
                 return true
-            case .codex, .cursor, .gemini:
+            case .codex, .cursor, .gemini, .claudeStatusLine:
                 return false
             }
         }
@@ -107,6 +108,15 @@ struct OpenIslandHooksCLI {
                     .withRuntimeContext(environment: ProcessInfo.processInfo.environment)
 
                 _ = try? client.send(.processGeminiHook(payload), timeout: 45)
+            case .claudeStatusLine:
+                // Status-line forwarding: parse the raw status-line JSON and
+                // push per-session context% + account quota over the bridge.
+                // Fire-and-forget with a short timeout; the visible status line
+                // is produced by the shell script, not by this call.
+                guard let payload = ClaudeStatusLineParser.parse(input) else {
+                    return
+                }
+                _ = try? client.send(.processClaudeStatusLine(payload), timeout: 5)
             }
         } catch {
             // Hooks should fail open so the CLI continues working even if the bridge is unavailable.

@@ -896,7 +896,8 @@ struct IslandPanelView: View {
                     UsageProviderPresentation(
                         id: "claude",
                         title: "Claude",
-                        windows: windows
+                        windows: windows,
+                        cachedAt: snapshot.cachedAt
                     )
                 )
             }
@@ -1021,9 +1022,20 @@ struct IslandPanelView: View {
         _ providers: [UsageProviderPresentation],
         usesShortTitles: Bool
     ) -> some View {
-        HStack(spacing: 7) {
-            ForEach(providers) { provider in
-                compactUsageChip(provider, usesShortTitle: usesShortTitles)
+        // Tick once a minute so reset countdowns advance and windows flip to
+        // "expired" without needing an unrelated state change to redraw.
+        TimelineView(.periodic(from: Date(), by: 60)) { context in
+            HStack(spacing: 7) {
+                ForEach(providers) { provider in
+                    ForEach(provider.windows) { window in
+                        usageWindowChip(
+                            provider: provider,
+                            window: window,
+                            usesShortTitle: usesShortTitles,
+                            now: context.date
+                        )
+                    }
+                }
             }
         }
         .lineLimit(1)
@@ -1039,19 +1051,50 @@ struct IslandPanelView: View {
         return screen.localizedName
     }
 
-    private func compactUsageChip(_ provider: UsageProviderPresentation, usesShortTitle: Bool) -> some View {
-        HStack(spacing: 5) {
+    /// One chip per usage window (5h, 7d, …). Each window is colored by its own
+    /// used percentage. Expired windows (reset time passed) are greyed and drop
+    /// the stale percentage; readings older than 5 min get a dim age hint.
+    private func usageWindowChip(
+        provider: UsageProviderPresentation,
+        window: UsageWindowPresentation,
+        usesShortTitle: Bool,
+        now: Date
+    ) -> some View {
+        let isExpired = window.resetsAt.map { $0 <= now } ?? false
+        let staleAge = provider.cachedAt.map { now.timeIntervalSince($0) } ?? 0
+        let isStale = staleAge > Self.usageStaleThreshold
+
+        return HStack(spacing: 5) {
             Text(usesShortTitle ? provider.shortTitle : provider.title)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.74))
+                .foregroundStyle(.white.opacity(isExpired ? 0.4 : 0.74))
 
-            Text(provider.peakWindowLabel)
+            Text(window.label)
                 .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.42))
+                .foregroundStyle(.white.opacity(isExpired ? 0.3 : 0.42))
 
-            Text("\(provider.peakUsagePercentage)%")
-                .font(.system(size: 11.5, weight: .bold, design: .monospaced))
-                .foregroundStyle(usageColor(for: provider.peakUsedPercentage))
+            if isExpired {
+                Text("reset")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.4))
+            } else {
+                Text("\(window.roundedUsedPercentage)%")
+                    .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                    .foregroundStyle(usageColor(for: window.usedPercentage))
+
+                if let resetsAt = window.resetsAt,
+                   let remaining = remainingDurationString(until: resetsAt, from: now) {
+                    Text("↺\(remaining)")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.34))
+                }
+            }
+
+            if isStale, let age = elapsedDurationString(seconds: staleAge) {
+                Text("·\(age)")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.3))
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -1060,6 +1103,7 @@ struct IslandPanelView: View {
             Capsule()
                 .strokeBorder(.white.opacity(0.06), lineWidth: 1)
         )
+        .opacity(isExpired ? 0.7 : 1)
         .help(usageHelpText(for: provider))
     }
 
@@ -1095,8 +1139,13 @@ struct IslandPanelView: View {
         }
     }
 
-    private func remainingDurationString(until date: Date) -> String? {
-        let interval = date.timeIntervalSinceNow
+    /// Readings older than this are flagged with an age hint (Q6). The app can
+    /// only ever be as fresh as the latest status-line turn, so it says so
+    /// rather than pretending a stale number is current.
+    private static let usageStaleThreshold: TimeInterval = 5 * 60
+
+    private func remainingDurationString(until date: Date, from now: Date = Date()) -> String? {
+        let interval = date.timeIntervalSince(now)
         guard interval > 0 else {
             return nil
         }
@@ -1117,12 +1166,31 @@ struct IslandPanelView: View {
 
         return formatter.string(from: interval)
     }
+
+    /// Compact "12m" / "3h" elapsed string for the staleness age hint.
+    private func elapsedDurationString(seconds: TimeInterval) -> String? {
+        guard seconds >= 60 else { return "1m" }
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .abbreviated
+        if seconds >= 86_400 {
+            formatter.allowedUnits = [.day]
+        } else if seconds >= 3_600 {
+            formatter.allowedUnits = [.hour]
+        } else {
+            formatter.allowedUnits = [.minute]
+        }
+        formatter.maximumUnitCount = 1
+        return formatter.string(from: seconds)
+    }
 }
 
 private struct UsageProviderPresentation: Identifiable {
     let id: String
     let title: String
     let windows: [UsageWindowPresentation]
+    /// When the app last learned this provider's numbers (bridge receipt time
+    /// for Claude). Drives the staleness hint — see the CONTEXT.md glossary.
+    var cachedAt: Date? = nil
 
     var peakWindow: UsageWindowPresentation? {
         windows.max { lhs, rhs in
@@ -1302,6 +1370,9 @@ private struct IslandSessionRow: View {
                 if let terminalBadge = session.spotlightTerminalBadge {
                     sideBadge(terminalBadge)
                 }
+                if let contextPercentage = session.claudeMetadata?.contextUsedPercentage {
+                    contextUsagePill(percentage: contextPercentage)
+                }
                 Text(session.spotlightAgeBadge)
                     .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                     .foregroundStyle(summaryAgeColor(for: presence))
@@ -1422,6 +1493,48 @@ private struct IslandSessionRow: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(.white.opacity(presentation == .notification ? 0.045 : 0.06), in: Capsule())
+    }
+
+    /// Per-session context-window fill (matches the CLI's "N% context").
+    /// Distinct from account quota — see the CONTEXT.md usage glossary. Only
+    /// shown for Claude-family sessions, which are the only ones that report it.
+    private func contextUsagePill(percentage: Double) -> some View {
+        let rounded = Int(percentage.rounded())
+        let tint: Color = switch percentage {
+        case 90...: .red
+        case 70..<90: .orange
+        default: .green
+        }
+        return Text("\(rounded)%")
+            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+            .foregroundStyle(tint.opacity(presentation == .notification ? 0.75 : 0.95))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(tint.opacity(0.12), in: Capsule())
+            .overlay(Capsule().strokeBorder(tint.opacity(0.22), lineWidth: 1))
+            .help(contextUsageHelpText(percentage: percentage))
+    }
+
+    private func contextUsageHelpText(percentage: Double) -> String {
+        var text = "Context window \(Int(percentage.rounded()))% full"
+        if let used = session.claudeMetadata?.totalInputTokens {
+            if let size = session.claudeMetadata?.contextWindowSize {
+                text += " (\(tokenCountLabel(used)) / \(tokenCountLabel(size)) tokens)"
+            } else {
+                text += " (\(tokenCountLabel(used)) tokens)"
+            }
+        }
+        return text
+    }
+
+    private func tokenCountLabel(_ tokens: Int) -> String {
+        if tokens >= 1_000_000 {
+            return String(format: "%.1fM", Double(tokens) / 1_000_000)
+        }
+        if tokens >= 1_000 {
+            return "\(Int((Double(tokens) / 1_000).rounded()))k"
+        }
+        return "\(tokens)"
     }
 
     private var summaryPromptLineText: String? {

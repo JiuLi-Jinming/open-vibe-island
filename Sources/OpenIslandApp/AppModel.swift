@@ -1115,6 +1115,13 @@ final class AppModel {
         }
 
         do {
+            // Account-wide quota arrives via a direct in-process callback from
+            // the status-line bridge command (not the per-session event stream).
+            bridgeServer.onClaudeUsageSnapshot = { [weak self] snapshot in
+                Task { @MainActor in
+                    self?.hooks.claudeUsageSnapshot = snapshot
+                }
+            }
             try bridgeServer.start()
             connectBridgeObserver()
         } catch {
@@ -1477,6 +1484,16 @@ final class AppModel {
         updateLastActionMessage: Bool = true,
         ingress: TrackedEventIngress = .bridge
     ) {
+        // Context-window telemetry fires ~once per assistant turn as passive
+        // data. Take a lightweight path: merge it into session state so the
+        // card refreshes, but skip notifications, last-action messages, watch
+        // relay, liveness marking, and persistence scheduling that the heavier
+        // events need. Bumping any of those here would spam and churn CPU.
+        if case .claudeContextUpdated = event {
+            state.apply(event)
+            return
+        }
+
         // Snapshot whether this session was already completed before applying
         // the event. Used to suppress duplicate/stale completion notifications
         // (e.g. rollout watcher re-discovering an old completion on startup,
@@ -1526,6 +1543,7 @@ final class AppModel {
                 case let .geminiSessionMetadataUpdated(p): return p.sessionID
                 case let .openCodeSessionMetadataUpdated(p): return p.sessionID
                 case let .cursorSessionMetadataUpdated(p): return p.sessionID
+                case let .claudeContextUpdated(p): return p.sessionID
                 case let .actionableStateResolved(p): return p.sessionID
                 }
             }()
@@ -1803,6 +1821,11 @@ final class AppModel {
             }
 
             return payload.cursorMetadata.lastAssistantMessage ?? "Cursor session metadata updated."
+        case let .claudeContextUpdated(payload):
+            if let pct = payload.contextUsedPercentage {
+                return "Claude context at \(Int(pct.rounded()))%."
+            }
+            return "Claude context updated."
         case let .actionableStateResolved(payload):
             return "Actionable state resolved for session \(payload.sessionID)."
         }
