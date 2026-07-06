@@ -55,6 +55,21 @@ final class ProcessMonitoringCoordinator {
     private static let cursorStalenessTimeout: TimeInterval = 600  // 10 minutes
     private static let codexAppStalenessTimeout: TimeInterval = 600  // 10 minutes
     private static let claudeDesktopStalenessTimeout: TimeInterval = 600  // 10 minutes
+    private static let vscodeExtensionStalenessTimeout: TimeInterval = 600  // 10 minutes
+
+    /// Editor hosts of the Claude Code editor extension, mapping the
+    /// `terminalApp` tag stamped by `ClaudeHooks.inferTerminalApp` to the host
+    /// app's bundle id. Trae ships under two bundle ids that both map to the
+    /// same "Trae" tag.
+    private static let vscodeExtensionHosts: [(terminalApp: String, bundleID: String)] = [
+        ("VS Code", "com.microsoft.VSCode"),
+        ("VS Code Insiders", "com.microsoft.VSCodeInsiders"),
+        ("Cursor", "com.todesktop.230313mzl4w4u92"),
+        ("Windsurf", "com.exafunction.windsurf"),
+        ("Trae", "com.trae.app"),
+        ("Trae", "cn.trae.app"),
+        ("Qoder", "com.qoder.qoder"),
+    ]
 
     static func monitoringPollInterval(
         isResolvingInitialLiveSessions: Bool,
@@ -564,6 +579,34 @@ final class ProcessMonitoringCoordinator {
                 if session.isSessionEnded { continue }
                 let isStale = session.phase == .completed
                     && session.updatedAt.addingTimeInterval(Self.claudeDesktopStalenessTimeout) < Date.now
+                if !isStale {
+                    aliveIDs.insert(session.id)
+                }
+            }
+        }
+
+        // Claude Code editor-extension sessions: the Claude Code VS Code
+        // extension (and forks) runs claude as a TTY-less subprocess inside the
+        // editor's extension host — invisible to ps/lsof, exactly like Claude
+        // Desktop above (CLAUDE_CODE_ENTRYPOINT=claude-vscode; #510-class
+        // eviction).  Keep such a session alive while its hosting editor is
+        // running.  Sessions started in an editor's *integrated terminal* carry
+        // a real controlling TTY and are matched by process discovery, so skip
+        // any session that has a TTY — this branch only rescues the TTY-less
+        // extension kind.  Completed sessions expire after a staleness window
+        // (mirrors the Cursor / Claude Desktop handling above).
+        for (terminalApp, bundleID) in Self.vscodeExtensionHosts {
+            guard !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty else {
+                continue
+            }
+            for session in sessions
+            where session.tool == .claudeCode
+                && !session.isDemoSession
+                && session.jumpTarget?.terminalApp == terminalApp {
+                if session.isSessionEnded { continue }
+                if normalizedTTYForMatching(session.jumpTarget?.terminalTTY) != nil { continue }
+                let isStale = session.phase == .completed
+                    && session.updatedAt.addingTimeInterval(Self.vscodeExtensionStalenessTimeout) < Date.now
                 if !isStale {
                     aliveIDs.insert(session.id)
                 }

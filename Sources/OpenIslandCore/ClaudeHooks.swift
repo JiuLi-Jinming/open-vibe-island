@@ -1205,6 +1205,39 @@ public extension ClaudeHookPayload {
             return "Claude.app"
         }
 
+        // Claude Code editor-extension host — the Claude Code VS Code extension
+        // (and forks: Cursor, Windsurf, Trae, Qoder) runs claude as a TTY-less
+        // subprocess inside the editor's extension host. Like Claude.app it is
+        // invisible to ps/lsof process discovery, so it must be identified from
+        // the environment and kept alive by app-level liveness (see
+        // ProcessMonitoringCoordinator). The extension sets
+        // CLAUDE_CODE_ENTRYPOINT=claude-vscode (authoritative, same rationale as
+        // claude-desktop above); the concrete host editor comes from
+        // __CFBundleIdentifier. Checked BEFORE TERM_PROGRAM because the
+        // extension host does not set TERM_PROGRAM (only the integrated-terminal
+        // shell does), and to avoid a launched editor leaking a parent shell's
+        // TERM_PROGRAM. The mapped names reuse existing terminal tags that
+        // already carry VS Code-family jump descriptors, so jump-back opens the
+        // workspace with no extra wiring.
+        if environment["CLAUDE_CODE_ENTRYPOINT"] == "claude-vscode" {
+            switch environment["__CFBundleIdentifier"]?.lowercased() {
+            case "com.microsoft.vscodeinsiders":
+                return "VS Code Insiders"
+            case "com.todesktop.230313mzl4w4u92":
+                return "Cursor"
+            case "com.exafunction.windsurf":
+                return "Windsurf"
+            case "com.trae.app", "cn.trae.app":
+                return "Trae"
+            case "com.qoder.qoder":
+                return "Qoder"
+            default:
+                // Includes com.microsoft.VSCode and any unrecognized VS
+                // Code-based editor; plain VS Code is the safe default host.
+                return "VS Code"
+            }
+        }
+
         // TERM_PROGRAM is the only authoritative terminal signal. Each
         // terminal sets it explicitly when it execs the user's shell, so
         // unlike per-app env vars (GHOSTTY_RESOURCES_DIR,

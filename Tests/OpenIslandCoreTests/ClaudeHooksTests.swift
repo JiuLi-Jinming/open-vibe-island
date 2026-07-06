@@ -372,6 +372,93 @@ struct ClaudeHooksTests {
         #expect(payload.terminalApp == "Claude.app")
     }
 
+    /// Verifies a Claude Code VS Code extension session is tagged `VS Code` via
+    /// the authoritative `CLAUDE_CODE_ENTRYPOINT=claude-vscode` signal. The
+    /// extension runs claude as a TTY-less subprocess inside the editor's
+    /// extension host — invisible to ps/lsof discovery — so this tag is what
+    /// lets liveness follow the editor app and routes jump-back to the
+    /// workspace (mirrors the Claude Desktop handling).
+    @Test
+    func claudeInferTerminalAppRecognizesVSCodeExtensionViaEntrypoint() {
+        let payload = ClaudeHookPayload(
+            cwd: "/tmp/demo", hookEventName: .sessionStart, sessionID: "s1"
+        ).withRuntimeContext(
+            environment: [
+                "CLAUDE_CODE_ENTRYPOINT": "claude-vscode",
+                "__CFBundleIdentifier": "com.microsoft.VSCode",
+            ],
+            currentTTYProvider: { nil },
+            terminalLocatorProvider: { _ in (sessionID: nil, tty: nil, title: nil) }
+        )
+
+        #expect(payload.terminalApp == "VS Code")
+        #expect(payload.defaultJumpTarget.terminalApp == "VS Code")
+    }
+
+    /// Verifies the extension entrypoint maps the concrete editor from
+    /// `__CFBundleIdentifier`, so the Claude Code extension running inside a
+    /// VS Code fork (Cursor here) is tagged with that fork, not plain VS Code.
+    @Test
+    func claudeInferTerminalAppRecognizesVSCodeForkExtensionViaBundleIdentifier() {
+        let cursor = ClaudeHookPayload(
+            cwd: "/tmp/demo", hookEventName: .sessionStart, sessionID: "s1"
+        ).withRuntimeContext(
+            environment: [
+                "CLAUDE_CODE_ENTRYPOINT": "claude-vscode",
+                "__CFBundleIdentifier": "com.todesktop.230313mzl4w4u92",
+            ],
+            currentTTYProvider: { nil },
+            terminalLocatorProvider: { _ in (sessionID: nil, tty: nil, title: nil) }
+        )
+        #expect(cursor.terminalApp == "Cursor")
+
+        let insiders = ClaudeHookPayload(
+            cwd: "/tmp/demo", hookEventName: .sessionStart, sessionID: "s1"
+        ).withRuntimeContext(
+            environment: [
+                "CLAUDE_CODE_ENTRYPOINT": "claude-vscode",
+                "__CFBundleIdentifier": "com.microsoft.VSCodeInsiders",
+            ],
+            currentTTYProvider: { nil },
+            terminalLocatorProvider: { _ in (sessionID: nil, tty: nil, title: nil) }
+        )
+        #expect(insiders.terminalApp == "VS Code Insiders")
+    }
+
+    /// Verifies the extension entrypoint falls back to `VS Code` when the host
+    /// bundle id is missing or unrecognized — VS Code is the safe default host.
+    @Test
+    func claudeInferTerminalAppExtensionDefaultsToVSCodeWhenBundleUnknown() {
+        let payload = ClaudeHookPayload(
+            cwd: "/tmp/demo", hookEventName: .sessionStart, sessionID: "s1"
+        ).withRuntimeContext(
+            environment: ["CLAUDE_CODE_ENTRYPOINT": "claude-vscode"],
+            currentTTYProvider: { nil },
+            terminalLocatorProvider: { _ in (sessionID: nil, tty: nil, title: nil) }
+        )
+
+        #expect(payload.terminalApp == "VS Code")
+    }
+
+    /// Verifies the extension entrypoint signal wins over a leaked
+    /// `TERM_PROGRAM`, mirroring the Claude Desktop ordering guarantee.
+    @Test
+    func claudeInferTerminalAppPrefersVSCodeExtensionOverLeakedTermProgram() {
+        let payload = ClaudeHookPayload(
+            cwd: "/tmp/demo", hookEventName: .sessionStart, sessionID: "s1"
+        ).withRuntimeContext(
+            environment: [
+                "CLAUDE_CODE_ENTRYPOINT": "claude-vscode",
+                "__CFBundleIdentifier": "com.microsoft.VSCode",
+                "TERM_PROGRAM": "ghostty",
+            ],
+            currentTTYProvider: { nil },
+            terminalLocatorProvider: { _ in (sessionID: nil, tty: nil, title: nil) }
+        )
+
+        #expect(payload.terminalApp == "VS Code")
+    }
+
     @Test
     func claudePermissionRequestReturnsAllowDirectiveAfterApproval() async throws {
         let socketURL = BridgeSocketLocation.uniqueTestURL()
