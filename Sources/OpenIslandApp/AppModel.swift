@@ -1230,7 +1230,7 @@ final class AppModel {
         claudeUsageProbeTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 if let self {
-                    let hasActiveSession = self.liveSessionCount > 0
+                    let hasActiveSession = self.surfacedSessions.contains { $0.tool == .claudeCode }
                     if shouldProbeClaudeUsage(
                         lastCachedAt: self.hooks.claudeUsageSnapshot?.cachedAt,
                         now: Date(),
