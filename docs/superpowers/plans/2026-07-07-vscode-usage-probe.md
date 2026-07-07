@@ -615,7 +615,19 @@ git commit -m "feat: drive quota probe from AppModel when snapshot is stale"
 
 ---
 
-### Task 6: Staleness indicator on the usage panel
+### Task 6: Staleness indicator on the usage panel — DROPPED (already implemented)
+
+**Status: not implemented — redundant.** During execution we found the usage
+panel already renders staleness: `IslandPanelView.usageWindowSubPill`
+(`Sources/OpenIslandApp/Views/IslandPanelView.swift:1086-1127`) computes
+`staleAge` from `provider.cachedAt`, flags `isStale` past a 5-min threshold,
+shows a dim `·<age>` hint, and greys expired windows — and no-ops for providers
+without `cachedAt` (Codex). Task 5 stamps `snapshot.cachedAt = Date()` on probe
+success, so probe-sourced data flows through this existing UI unchanged. The
+`ClaudeUsageFreshness.swift` helpers below were therefore NOT created. Original
+plan text retained for the record:
+
+
 
 **Files:**
 - Create: `Sources/OpenIslandCore/ClaudeUsageFreshness.swift`
