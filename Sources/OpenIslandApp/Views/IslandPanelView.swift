@@ -338,8 +338,9 @@ struct IslandPanelView: View {
     private var openedHeaderContent: some View {
         if usesNotchAwareOpenedHeader {
             GeometryReader { geometry in
-                let providers = openedUsageProviders
-                let providerGroups = splitUsageProviders(providers)
+                // Usage moved to the session-list header (more room there), so
+                // the notch flanks now carry only the control buttons.
+                let providerGroups: (left: [UsageProviderPresentation], right: [UsageProviderPresentation]) = ([], [])
                 let metrics = openedHeaderMetrics(for: geometry.size.width)
 
                 HStack(spacing: 0) {
@@ -363,8 +364,8 @@ struct IslandPanelView: View {
             }
         } else {
             HStack(spacing: 12) {
-                openedUsageSummary
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                // Usage moved to the session-list header; keep just the controls.
+                Spacer(minLength: 0)
 
                 openedHeaderButtons
             }
@@ -704,11 +705,15 @@ struct IslandPanelView: View {
                 sessionOverviewView(overview, compact: true)
             }
 
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
+
+            // Account quota lives here (right of the session overview) rather
+            // than the cramped notch side-lanes, where only one window fit.
+            openedUsageSummary
         }
         .padding(.leading, sessionListSideInset)
         .padding(.trailing, sessionListSideInset)
-        .frame(height: 36)
+        .frame(height: 30)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(.white.opacity(0.055))
@@ -1027,14 +1032,11 @@ struct IslandPanelView: View {
         TimelineView(.periodic(from: Date(), by: 60)) { context in
             HStack(spacing: 7) {
                 ForEach(providers) { provider in
-                    ForEach(provider.windows) { window in
-                        usageWindowChip(
-                            provider: provider,
-                            window: window,
-                            usesShortTitle: usesShortTitles,
-                            now: context.date
-                        )
-                    }
+                    usageProviderGroup(
+                        provider,
+                        usesShortTitle: usesShortTitles,
+                        now: context.date
+                    )
                 }
             }
         }
@@ -1051,60 +1053,77 @@ struct IslandPanelView: View {
         return screen.localizedName
     }
 
-    /// One chip per usage window (5h, 7d, …). Each window is colored by its own
-    /// used percentage. Expired windows (reset time passed) are greyed and drop
-    /// the stale percentage; readings older than 5 min get a dim age hint.
-    private func usageWindowChip(
+    /// One grouped container per provider: the provider name followed by a
+    /// nested sub-pill per window — `[claude [5h 23% ↺1h32m] [7d 12% ↺4d]]`.
+    private func usageProviderGroup(
+        _ provider: UsageProviderPresentation,
+        usesShortTitle: Bool,
+        now: Date
+    ) -> some View {
+        HStack(spacing: 6) {
+            Text(usesShortTitle ? provider.shortTitle : provider.title.lowercased())
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.7))
+
+            ForEach(provider.windows) { window in
+                usageWindowSubPill(provider: provider, window: window, now: now)
+            }
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 5)
+        .padding(.vertical, 3)
+        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(.white.opacity(0.06), lineWidth: 1)
+        )
+        .help(usageHelpText(for: provider))
+    }
+
+    /// Inner window sub-pill. Colored by its own used percentage. Expired windows
+    /// (reset passed) are greyed and drop the stale percentage; readings older
+    /// than 5 min get a dim age hint.
+    private func usageWindowSubPill(
         provider: UsageProviderPresentation,
         window: UsageWindowPresentation,
-        usesShortTitle: Bool,
         now: Date
     ) -> some View {
         let isExpired = window.resetsAt.map { $0 <= now } ?? false
         let staleAge = provider.cachedAt.map { now.timeIntervalSince($0) } ?? 0
         let isStale = staleAge > Self.usageStaleThreshold
 
-        return HStack(spacing: 5) {
-            Text(usesShortTitle ? provider.shortTitle : provider.title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.white.opacity(isExpired ? 0.4 : 0.74))
-
+        return HStack(spacing: 4) {
             Text(window.label)
-                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.white.opacity(isExpired ? 0.3 : 0.42))
 
             if isExpired {
                 Text("reset")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.4))
             } else {
                 Text("\(window.roundedUsedPercentage)%")
-                    .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundStyle(usageColor(for: window.usedPercentage))
 
                 if let resetsAt = window.resetsAt,
                    let remaining = remainingDurationString(until: resetsAt, from: now) {
                     Text("↺\(remaining)")
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.34))
+                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.32))
                 }
             }
 
             if isStale, let age = elapsedDurationString(seconds: staleAge) {
                 Text("·\(age)")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.3))
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(.white.opacity(0.055), in: Capsule())
-        .overlay(
-            Capsule()
-                .strokeBorder(.white.opacity(0.06), lineWidth: 1)
-        )
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(.white.opacity(0.06), in: Capsule())
         .opacity(isExpired ? 0.7 : 1)
-        .help(usageHelpText(for: provider))
     }
 
     private func usageHelpText(for provider: UsageProviderPresentation) -> String {
@@ -1164,7 +1183,8 @@ struct IslandPanelView: View {
             formatter.maximumUnitCount = 1
         }
 
-        return formatter.string(from: interval)
+        // Drop the space so it reads "1h32m" / "3d" — tighter in the chip.
+        return formatter.string(from: interval)?.replacingOccurrences(of: " ", with: "")
     }
 
     /// Compact "12m" / "3h" elapsed string for the staleness age hint.
@@ -1368,10 +1388,7 @@ private struct IslandSessionRow: View {
                     sideBadge("SSH")
                 }
                 if let terminalBadge = session.spotlightTerminalBadge {
-                    sideBadge(terminalBadge)
-                }
-                if let contextPercentage = session.claudeMetadata?.contextUsedPercentage {
-                    contextUsagePill(percentage: contextPercentage)
+                    sideBadge(platformBadgeAbbreviation(terminalBadge))
                 }
                 Text(session.spotlightAgeBadge)
                     .font(.system(size: 10.5, weight: .medium, design: .monospaced))
@@ -1490,51 +1507,11 @@ private struct IslandSessionRow: View {
         Text(title)
             .font(.system(size: 10.5, weight: .medium, design: .monospaced))
             .foregroundStyle(V6Palette.paper.opacity(presentation == .notification ? 0.52 : 0.7))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(.white.opacity(presentation == .notification ? 0.045 : 0.06), in: Capsule())
-    }
-
-    /// Per-session context-window fill (matches the CLI's "N% context").
-    /// Distinct from account quota — see the CONTEXT.md usage glossary. Only
-    /// shown for Claude-family sessions, which are the only ones that report it.
-    private func contextUsagePill(percentage: Double) -> some View {
-        let rounded = Int(percentage.rounded())
-        let tint: Color = switch percentage {
-        case 90...: .red
-        case 70..<90: .orange
-        default: .green
-        }
-        return Text("\(rounded)%")
-            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-            .foregroundStyle(tint.opacity(presentation == .notification ? 0.75 : 0.95))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(tint.opacity(0.12), in: Capsule())
-            .overlay(Capsule().strokeBorder(tint.opacity(0.22), lineWidth: 1))
-            .help(contextUsageHelpText(percentage: percentage))
-    }
-
-    private func contextUsageHelpText(percentage: Double) -> String {
-        var text = "Context window \(Int(percentage.rounded()))% full"
-        if let used = session.claudeMetadata?.totalInputTokens {
-            if let size = session.claudeMetadata?.contextWindowSize {
-                text += " (\(tokenCountLabel(used)) / \(tokenCountLabel(size)) tokens)"
-            } else {
-                text += " (\(tokenCountLabel(used)) tokens)"
-            }
-        }
-        return text
-    }
-
-    private func tokenCountLabel(_ tokens: Int) -> String {
-        if tokens >= 1_000_000 {
-            return String(format: "%.1fM", Double(tokens) / 1_000_000)
-        }
-        if tokens >= 1_000 {
-            return "\(Int((Double(tokens) / 1_000).rounded()))k"
-        }
-        return "\(tokens)"
     }
 
     private var summaryPromptLineText: String? {
@@ -1581,16 +1558,43 @@ private struct IslandSessionRow: View {
 
     private var agentBadgeTitle: String {
         switch session.tool {
-        case .claudeCode:
-            "claude"
-        case .geminiCLI:
-            "gemini"
-        case .qwenCode:
-            "qwen"
-        case .kimiCLI:
-            "kimi"
-        default:
-            session.tool.shortName.lowercased()
+        case .claudeCode: "cl"
+        case .codex: "cx"
+        case .geminiCLI: "gm"
+        case .qwenCode: "qw"
+        case .kimiCLI: "km"
+        case .openCode: "oc"
+        case .qoder: "qo"
+        case .factory: "fc"
+        case .codebuddy: "cb"
+        case .cursor: "cu"
+        }
+    }
+
+    /// Short abbreviation for the platform/terminal badge (e.g. "VS Code" → vsc,
+    /// "Terminal" → cmd). Falls back to the first 3 lowercase letters.
+    private func platformBadgeAbbreviation(_ app: String) -> String {
+        switch app {
+        case "VS Code", "Code": "vsc"
+        case "Code - Insiders", "VS Code - Insiders": "vsi"
+        case "Cursor": "cur"
+        case "Windsurf": "wsf"
+        case "Trae": "tra"
+        case "Qoder": "qod"
+        case "Terminal", "Apple Terminal": "cmd"
+        case "iTerm", "iTerm2": "itm"
+        case "Ghostty": "ght"
+        case "Warp": "wrp"
+        case "WezTerm": "wez"
+        case "Alacritty": "ala"
+        case "Kitty": "kty"
+        case "Hyper": "hyp"
+        case "Zed": "zed"
+        case "cmux": "cmx"
+        case "Claude.app": "cl"
+        case "Codex.app": "cx"
+        case "Unknown": "?"
+        default: String(app.lowercased().prefix(3))
         }
     }
 
