@@ -507,6 +507,14 @@ final class AppModel {
     private var bridgeReconnectTask: Task<Void, Never>?
 
     @ObservationIgnored
+    private var claudeUsageProbeTask: Task<Void, Never>?
+    @ObservationIgnored
+    private let claudeUsageProber = ClaudeUsageProber(
+        tokenProvider: ClaudeKeychainTokenProvider(),
+        httpClient: URLSessionUsageHTTPClient()
+    )
+
+    @ObservationIgnored
     private var hasStarted = false
 
     @ObservationIgnored
@@ -1090,6 +1098,7 @@ final class AppModel {
             hooks.refreshCursorHookStatus()
             hooks.refreshClaudeUsageState()
             hooks.startClaudeUsageMonitoringIfNeeded()
+            startClaudeUsageProbeIfNeeded()
             if showCodexUsage {
                 hooks.refreshCodexUsageState()
                 hooks.startCodexUsageMonitoringIfNeeded()
@@ -1208,6 +1217,33 @@ final class AppModel {
                 // If we're now connected, stop retrying.
                 if self.isBridgeReady { return }
                 delay = min(delay * 2, Self.bridgeMaxReconnectDelay)
+            }
+        }
+    }
+
+    /// Fallback quota refresh for TTY-less (VS Code) sessions: the terminal
+    /// status line never runs there, so the 5h/7d panel would otherwise freeze.
+    /// Polls every 60 s but only probes when a session is live and the snapshot
+    /// is stale (>120 s) — terminal sessions keep it fresh via the status line.
+    private func startClaudeUsageProbeIfNeeded() {
+        guard claudeUsageProbeTask == nil else { return }
+        claudeUsageProbeTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                if let self {
+                    let hasActiveSession = self.liveSessionCount > 0
+                    if shouldProbeClaudeUsage(
+                        lastCachedAt: self.hooks.claudeUsageSnapshot?.cachedAt,
+                        now: Date(),
+                        hasActiveSession: hasActiveSession,
+                        stalenessThreshold: 120
+                    ) {
+                        if var snapshot = await self.claudeUsageProber.probe() {
+                            snapshot.cachedAt = Date()
+                            self.hooks.claudeUsageSnapshot = snapshot
+                        }
+                    }
+                }
+                try? await Task.sleep(for: .seconds(60))
             }
         }
     }
