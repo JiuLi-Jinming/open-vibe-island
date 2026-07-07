@@ -114,6 +114,38 @@ struct ClaudeUsageTests {
     }
 
     @Test
+    func snapshotParsesFlatWindowShape() {
+        let payload: [String: Any] = [
+            "five_hour": ["utilization": 42.0, "resets_at": 1_760_000_000],
+            "seven_day": ["utilization": 18.0, "resets_at": 1_760_500_000],
+        ]
+        let snapshot = ClaudeUsageLoader.snapshot(from: payload, cachedAt: nil)
+        #expect(snapshot?.fiveHour?.roundedUsedPercentage == 42)
+        #expect(snapshot?.sevenDay?.roundedUsedPercentage == 18)
+        #expect(snapshot?.fiveHour?.resetsAt == Date(timeIntervalSince1970: 1_760_000_000))
+    }
+
+    @Test
+    func snapshotParsesNestedLimitAndDataEnvelope() {
+        let payload: [String: Any] = [
+            "data": [
+                "five_hour": ["limit": ["used_percentage": 55.0, "resets_at": "2026-07-07T12:00:00Z"]],
+                "seven_day": ["limit": ["used_percentage": 12.0]],
+            ]
+        ]
+        let snapshot = ClaudeUsageLoader.snapshot(from: payload, cachedAt: Date(timeIntervalSince1970: 100))
+        #expect(snapshot?.fiveHour?.roundedUsedPercentage == 55)
+        #expect(snapshot?.sevenDay?.roundedUsedPercentage == 12)
+        #expect(snapshot?.sevenDay?.resetsAt == nil)
+        #expect(snapshot?.cachedAt == Date(timeIntervalSince1970: 100))
+    }
+
+    @Test
+    func snapshotReturnsNilWhenNoWindows() {
+        #expect(ClaudeUsageLoader.snapshot(from: ["unrelated": 1], cachedAt: nil) == nil)
+    }
+
+    @Test
     func claudeStatusLineInstallationManagerInstallsManagedScriptWithoutOverwritingCustomCommand() throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("open-island-claude-status-\(UUID().uuidString)", isDirectory: true)

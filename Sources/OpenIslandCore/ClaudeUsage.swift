@@ -55,13 +55,7 @@ public enum ClaudeUsageLoader {
 
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
         let cachedAt = attributes?[.modificationDate] as? Date
-        let snapshot = ClaudeUsageSnapshot(
-            fiveHour: usageWindow(for: "five_hour", in: payload),
-            sevenDay: usageWindow(for: "seven_day", in: payload),
-            cachedAt: cachedAt
-        )
-
-        return snapshot.isEmpty ? nil : snapshot
+        return snapshot(from: payload, cachedAt: cachedAt)
     }
 
     public static func load(from urls: [URL]) throws -> ClaudeUsageSnapshot? {
@@ -85,15 +79,32 @@ public enum ClaudeUsageLoader {
         return nil
     }
 
+    /// Parses a decoded usage payload (from the status-line cache file OR the
+    /// `/api/oauth/usage` probe) into a snapshot. Tolerant of two shapes: window
+    /// metrics at the window-dict root, or nested under a `limit` sub-dict; and an
+    /// optional top-level `data` / `rate_limits` envelope.
+    public static func snapshot(from payload: [String: Any], cachedAt: Date?) -> ClaudeUsageSnapshot? {
+        let root = (payload["data"] as? [String: Any])
+            ?? (payload["rate_limits"] as? [String: Any])
+            ?? payload
+        let snapshot = ClaudeUsageSnapshot(
+            fiveHour: usageWindow(for: "five_hour", in: root),
+            sevenDay: usageWindow(for: "seven_day", in: root),
+            cachedAt: cachedAt
+        )
+        return snapshot.isEmpty ? nil : snapshot
+    }
+
     private static func usageWindow(for key: String, in payload: [String: Any]) -> ClaudeUsageWindow? {
-        guard let window = payload[key] as? [String: Any],
-              let rawPercentage = number(from: window["used_percentage"]) ?? number(from: window["utilization"]) else {
+        guard let window = payload[key] as? [String: Any] else { return nil }
+        let metrics = (window["limit"] as? [String: Any]) ?? window
+        guard let rawPercentage = number(from: metrics["used_percentage"])
+            ?? number(from: metrics["utilization"]) else {
             return nil
         }
-
         return ClaudeUsageWindow(
             usedPercentage: rawPercentage,
-            resetsAt: date(from: window["resets_at"])
+            resetsAt: date(from: metrics["resets_at"])
         )
     }
 
