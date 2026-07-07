@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Foundation
 import OpenIslandCore
 
@@ -15,6 +16,11 @@ struct TerminalJumpService {
     /// `NSWorkspace.shared.frontmostApplication`; tests inject `{ true }`
     /// to skip the polling loop entirely.
     typealias WarpFrontmostChecker = @Sendable () -> Bool
+    /// Raises the Terminal.app window whose frame matches the given rect to the
+    /// front via the Accessibility API. Production uses the real AXRaise
+    /// implementation; tests inject a spy to verify the correlation without
+    /// touching live windows or requiring Accessibility permission.
+    typealias TerminalWindowRaiser = @Sendable (CGRect) -> Bool
 
     private struct TerminalAppDescriptor {
         let displayName: String
@@ -214,6 +220,7 @@ struct TerminalJumpService {
     private let warpTabCountReader: WarpTabCountReader
     private let warpKeystroker: KeystrokeInjector
     private let warpFrontmostChecker: WarpFrontmostChecker
+    private let terminalWindowRaiser: TerminalWindowRaiser
 
     init(
         applicationResolver: @escaping ApplicationResolver = { bundleIdentifier in
@@ -234,7 +241,8 @@ struct TerminalJumpService {
             // updated via KVO that can lag the real frontmost transition).
             NSWorkspace.shared.frontmostApplication?.bundleIdentifier
                 == "dev.warp.Warp-Stable"
-        }
+        },
+        terminalWindowRaiser: @escaping TerminalWindowRaiser = Self.raiseTerminalWindowViaAX(matching:)
     ) {
         self.applicationResolver = applicationResolver
         self.appRunningChecker = appRunningChecker
@@ -245,6 +253,7 @@ struct TerminalJumpService {
         self.warpTabCountReader = warpTabCountReader
         self.warpKeystroker = warpKeystroker
         self.warpFrontmostChecker = warpFrontmostChecker
+        self.terminalWindowRaiser = terminalWindowRaiser
     }
 
     func jump(to target: JumpTarget) throws -> String {
@@ -471,7 +480,29 @@ struct TerminalJumpService {
         guard let cli = Self.vscodeFamilyCLI[bundleIdentifier] else {
             return false
         }
-        return processRunner(cli, ["-r", workspacePath])
+        // Prefer the CLI embedded in the app bundle. The bare `code`/`cursor`/…
+        // command is usually NOT on the PATH a GUI app inherits — it only lands
+        // in /usr/local/bin after the user explicitly runs "Shell Command:
+        // Install 'code' command in PATH". Relying on the bare name makes the
+        // precise `-r` (reuse-window) focus silently fail, so the jump falls
+        // back to plain app activation and surfaces the most-recently-used
+        // window instead of the one hosting the session. Resolving the absolute
+        // path inside the .app makes precise focus work regardless of PATH.
+        let executable = embeddedVSCodeFamilyCLIPath(bundleIdentifier: bundleIdentifier, cliName: cli) ?? cli
+        return processRunner(executable, ["-r", workspacePath])
+    }
+
+    /// Absolute path to the `code`/`cursor`/… launcher embedded in the editor's
+    /// app bundle (`Contents/Resources/app/bin/<cliName>`), or nil when the
+    /// bundle can't be located or the launcher is missing.
+    private func embeddedVSCodeFamilyCLIPath(bundleIdentifier: String, cliName: String) -> String? {
+        guard let appURL = applicationResolver(bundleIdentifier) else {
+            return nil
+        }
+        let cliURL = appURL
+            .appendingPathComponent("Contents/Resources/app/bin", isDirectory: true)
+            .appendingPathComponent(cliName)
+        return FileManager.default.isExecutableFile(atPath: cliURL.path) ? cliURL.path : nil
     }
 
     // MARK: - JetBrains IDE family
@@ -925,18 +956,62 @@ struct TerminalJumpService {
     }
 
     private func jumpToTerminalTab(_ target: JumpTarget) throws -> Bool {
-        let script = """
+        let wantTTY = escapeAppleScript(target.terminalTTY)
+        let wantTitle = escapeAppleScript(target.paneTitle)
+
+        // 1. Locate the target window by tty (or pane title), select its tab so
+        //    the window shows the right session, and return the window bounds
+        //    ("left,top,right,bottom") so we can correlate it with an
+        //    Accessibility window below. Returns "" when nothing matches.
+        // Match by tty when we have one — it is unique per tab. Only fall back
+        // to the pane title when no tty is available: every Terminal tab shares
+        // the same generic custom title ("Terminal"), so an OR'd `contains`
+        // title match hits every window and, with Z-order iteration, always
+        // returns whichever window is frontmost (i.e. the last-active one).
+        let matchClause = """
+        ("\(wantTTY)" is not "" and (tty of aTab as text) is "\(wantTTY)") or ("\(wantTTY)" is "" and "\(wantTitle)" is not "" and (custom title of aTab as text) contains "\(wantTitle)")
+        """
+        let locateScript = """
+        tell application "Terminal"
+            if not (it is running) then return ""
+            repeat with aWindow in windows
+                repeat with aTab in tabs of aWindow
+                    if \(matchClause) then
+                        set selected of aTab to true
+                        set b to bounds of aWindow
+                        return (item 1 of b as text) & "," & (item 2 of b as text) & "," & (item 3 of b as text) & "," & (item 4 of b as text)
+                    end if
+                end repeat
+            end repeat
+        end tell
+        return ""
+        """
+
+        let locateResult = try runAppleScript(locateScript)
+        guard !locateResult.isEmpty else {
+            return false
+        }
+
+        // 2. Raise that exact window via the Accessibility API. AXRaise is the
+        //    only reliable way to bring a specific window forward among
+        //    same-Space sibling windows when the request originates from a
+        //    background/accessory app — AppleScript's `set frontmost`/`index`
+        //    silently no-ops in that context (it only appears to work across
+        //    Spaces, where macOS follows the activated window).
+        if let frame = Self.parseTerminalBounds(locateResult), terminalWindowRaiser(frame) {
+            return true
+        }
+
+        // 3. Fallback when Accessibility is unavailable/denied: best-effort
+        //    AppleScript activate + frontmost. Reliable across Spaces, flaky for
+        //    same-Space siblings — but strictly better than plain app activation.
+        let activateScript = """
         tell application "Terminal"
             if not (it is running) then return ""
             activate
             repeat with aWindow in windows
                 repeat with aTab in tabs of aWindow
-                    if "\(escapeAppleScript(target.terminalTTY))" is not "" and (tty of aTab as text) is "\(escapeAppleScript(target.terminalTTY))" then
-                        set selected of aTab to true
-                        set frontmost of aWindow to true
-                        return "matched"
-                    end if
-                    if "\(escapeAppleScript(target.paneTitle))" is not "" and (custom title of aTab as text) contains "\(escapeAppleScript(target.paneTitle))" then
+                    if \(matchClause) then
                         set selected of aTab to true
                         set frontmost of aWindow to true
                         return "matched"
@@ -946,8 +1021,75 @@ struct TerminalJumpService {
         end tell
         return ""
         """
+        return try runAppleScript(activateScript) == "matched"
+    }
 
-        return try runAppleScript(script) == "matched"
+    /// Parses an AppleScript window `bounds` string ("left,top,right,bottom")
+    /// into a screen-coordinate frame (top-left origin, matching AXPosition).
+    static func parseTerminalBounds(_ value: String) -> CGRect? {
+        let parts = value.split(separator: ",").compactMap { part in
+            Double(part.trimmingCharacters(in: .whitespaces))
+        }
+        guard parts.count == 4 else {
+            return nil
+        }
+        return CGRect(x: parts[0], y: parts[1], width: parts[2] - parts[0], height: parts[3] - parts[1])
+    }
+
+    /// Brings the Terminal window whose frame matches `frame` to the front via
+    /// the Accessibility API. Correlates AppleScript's window (identified by
+    /// bounds) with the matching AXWindow by top-left position, then performs
+    /// `AXRaise` and marks it main. Returns false when Terminal isn't running,
+    /// Accessibility permission is denied, or no window matches.
+    private static func raiseTerminalWindowViaAX(matching frame: CGRect) -> Bool {
+        guard let app = NSRunningApplication
+            .runningApplications(withBundleIdentifier: "com.apple.Terminal")
+            .first else {
+            return false
+        }
+
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else {
+            return false
+        }
+
+        for window in windows {
+            guard let position = axPosition(of: window) else {
+                continue
+            }
+            // Match by top-left corner (a few px tolerance absorbs rounding
+            // between AppleScript bounds and AXPosition). Position uniquely
+            // identifies a window unless two are stacked at the same spot.
+            if abs(position.x - frame.origin.x) <= 3, abs(position.y - frame.origin.y) <= 3 {
+                // Order matters: bring Terminal forward FIRST, then mark the
+                // target window main and raise it LAST. Activating after the
+                // raise re-fronts the app's previously-focused (wrong) window,
+                // undoing the raise.
+                app.activate(options: [.activateIgnoringOtherApps])
+                AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+                AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private static func axPosition(of element: AXUIElement) -> CGPoint? {
+        var positionRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionRef) == .success,
+              let positionRef,
+              CFGetTypeID(positionRef) == AXValueGetTypeID() else {
+            return nil
+        }
+        let value = positionRef as! AXValue
+        var point = CGPoint.zero
+        guard AXValueGetType(value) == .cgPoint, AXValueGetValue(value, .cgPoint, &point) else {
+            return nil
+        }
+        return point
     }
 
     // MARK: - WezTerm-family (Kaku / WezTerm) CLI-based jump

@@ -12,6 +12,14 @@ final class TerminalJumpServiceTests: XCTestCase {
         var values: [(String, [String])] = []
     }
 
+    private final class TerminalFrameBox: @unchecked Sendable {
+        var value: CGRect?
+    }
+
+    private final class ScriptCaptureBox: @unchecked Sendable {
+        var values: [String] = []
+    }
+
     func testGhosttyJumpScriptActivatesWindowAndRetriesFocusUntilItSticks() {
         let target = JumpTarget(
             terminalApp: "Ghostty",
@@ -177,6 +185,141 @@ final class TerminalJumpServiceTests: XCTestCase {
 
         XCTAssertEqual(result, "Focused the matching Cursor workspace.")
         XCTAssertTrue(openedArguments.values.isEmpty)
+    }
+
+    func testVSCodeFamilyJumpUsesEmbeddedCLIPathWhenBareCommandNotOnPATH() throws {
+        // Regression: the `code`/`cursor`/… command is usually NOT on the PATH a
+        // GUI app inherits (it only lands in /usr/local/bin after the user runs
+        // "Shell Command: Install 'code' command in PATH"). Invoking the bare
+        // command therefore fails to launch, precise window focus silently
+        // falls back to plain app activation, and the jump surfaces the
+        // most-recently-used window instead of the one hosting the session.
+        // The jump must call the CLI embedded in the app bundle
+        // (Contents/Resources/app/bin/code) by absolute path.
+        let fm = FileManager.default
+        let sandbox = fm.temporaryDirectory
+            .appendingPathComponent("VSCodeJumpTest-\(UUID().uuidString)", isDirectory: true)
+        let bundleURL = sandbox.appendingPathComponent("Visual Studio Code.app", isDirectory: true)
+        let binDir = bundleURL.appendingPathComponent("Contents/Resources/app/bin", isDirectory: true)
+        try fm.createDirectory(at: binDir, withIntermediateDirectories: true)
+        let cliURL = binDir.appendingPathComponent("code")
+        try "#!/bin/sh\nexit 0\n".write(to: cliURL, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cliURL.path)
+        defer { try? fm.removeItem(at: sandbox) }
+
+        let processInvocations = ProcessInvocationBox()
+        let openedArguments = OpenedArgumentsBox()
+        let service = TerminalJumpService(
+            applicationResolver: { id in
+                id == "com.microsoft.VSCode" ? bundleURL : nil
+            },
+            appRunningChecker: { id in id == "com.microsoft.VSCode" },
+            openAction: { arguments in
+                openedArguments.values.append(arguments)
+            },
+            appleScriptRunner: { _ in "" },
+            processRunner: { executable, arguments in
+                processInvocations.values.append((executable, arguments))
+                return true
+            }
+        )
+
+        let result = try service.jump(
+            to: JumpTarget(
+                terminalApp: "VS Code",
+                workspaceName: "open-vibe-island",
+                paneTitle: "",
+                workingDirectory: "/Users/test/open-vibe-island"
+            )
+        )
+
+        XCTAssertEqual(result, "Focused the matching VS Code workspace.")
+        XCTAssertTrue(openedArguments.values.isEmpty)
+        XCTAssertEqual(processInvocations.values.count, 1)
+        XCTAssertEqual(processInvocations.values.first?.0, cliURL.path)
+        XCTAssertEqual(processInvocations.values.first?.1, ["-r", "/Users/test/open-vibe-island"])
+    }
+
+    func testTerminalJumpRaisesMatchingWindowViaAccessibility() throws {
+        // The tty-matched window's bounds must be handed to the Accessibility
+        // raiser so AXRaise can bring that exact window forward among same-Space
+        // siblings — the AppleScript-only path can't do this from a background app.
+        let capturedFrame = TerminalFrameBox()
+        let scripts = ScriptCaptureBox()
+        let service = TerminalJumpService(
+            applicationResolver: { id in
+                id == "com.apple.Terminal" ? URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app") : nil
+            },
+            appRunningChecker: { id in id == "com.apple.Terminal" },
+            openAction: { _ in },
+            appleScriptRunner: { script in
+                scripts.values.append(script)
+                return script.contains("bounds of aWindow") ? "100,200,900,700" : ""
+            },
+            terminalWindowRaiser: { frame in
+                capturedFrame.value = frame
+                return true
+            }
+        )
+
+        let result = try service.jump(
+            to: JumpTarget(
+                terminalApp: "Terminal",
+                workspaceName: "open-vibe-island",
+                paneTitle: "",
+                workingDirectory: "/Users/test/open-vibe-island",
+                terminalTTY: "/dev/ttys001"
+            )
+        )
+
+        XCTAssertEqual(result, "Focused the matching Terminal tab.")
+        XCTAssertEqual(capturedFrame.value, CGRect(x: 100, y: 200, width: 800, height: 500))
+        // Only the locate script should have run — no AppleScript fallback needed
+        // once AXRaise succeeds.
+        XCTAssertEqual(scripts.values.count, 1)
+        XCTAssertTrue(scripts.values.first?.contains("bounds of aWindow") == true)
+    }
+
+    func testTerminalJumpFallsBackToAppleScriptWhenAccessibilityRaiseFails() throws {
+        // When AXRaise can't run (permission denied / no match), fall back to the
+        // best-effort AppleScript activate + frontmost path.
+        let scripts = ScriptCaptureBox()
+        let service = TerminalJumpService(
+            applicationResolver: { id in
+                id == "com.apple.Terminal" ? URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app") : nil
+            },
+            appRunningChecker: { id in id == "com.apple.Terminal" },
+            openAction: { _ in },
+            appleScriptRunner: { script in
+                scripts.values.append(script)
+                if script.contains("bounds of aWindow") { return "0,0,800,600" }
+                return "matched"
+            },
+            terminalWindowRaiser: { _ in false }
+        )
+
+        let result = try service.jump(
+            to: JumpTarget(
+                terminalApp: "Terminal",
+                workspaceName: "open-vibe-island",
+                paneTitle: "",
+                workingDirectory: "/Users/test/open-vibe-island",
+                terminalTTY: "/dev/ttys001"
+            )
+        )
+
+        XCTAssertEqual(result, "Focused the matching Terminal tab.")
+        XCTAssertEqual(scripts.values.count, 2)
+        XCTAssertTrue(scripts.values.last?.contains("set frontmost of aWindow to true") == true)
+    }
+
+    func testParseTerminalBoundsConvertsRightBottomToWidthHeight() {
+        XCTAssertEqual(
+            TerminalJumpService.parseTerminalBounds("100, 200, 900, 700"),
+            CGRect(x: 100, y: 200, width: 800, height: 500)
+        )
+        XCTAssertNil(TerminalJumpService.parseTerminalBounds("1,2,3"))
+        XCTAssertNil(TerminalJumpService.parseTerminalBounds(""))
     }
 
     func testWarpJumpReturnsImmediatelyWhenAlreadyOnTargetPane() throws {
